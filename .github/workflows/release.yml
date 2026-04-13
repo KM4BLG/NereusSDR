@@ -388,7 +388,11 @@ jobs:
           # which NSIS requires to be exactly 4 numeric dot-separated components.
           $versionNumeric = $version -replace '-.*$', ''
           $deploy  = (Resolve-Path deploy).Path
-          $outfile = "NereusSDR-$version-Windows-x64-setup.exe"
+          # NSIS resolves a relative OutFile against the .nsi file's directory,
+          # not the invocation CWD. Pass an absolute path so the installer
+          # lands in the repo root where the upload-artifact glob finds it.
+          $repoRoot = (Resolve-Path .).Path
+          $outfile  = Join-Path $repoRoot "NereusSDR-$version-Windows-x64-setup.exe"
           & "C:\Program Files (x86)\NSIS\makensis.exe" `
               /DNSDR_VERSION=$version `
               /DNSDR_VERSION_NUMERIC=$versionNumeric `
