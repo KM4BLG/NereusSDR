@@ -413,3 +413,101 @@ jobs:
             NereusSDR-*.zip
             NereusSDR-*-setup.exe
           retention-days: 7
+
+  sign-and-publish:
+    needs: [prepare, build-linux, build-macos, build-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.prepare.outputs.tag }}
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: downloaded
+
+      - name: Stage artifacts
+        run: |
+          mkdir -p artifacts
+          find downloaded -type f \( \
+            -name '*.AppImage' -o \
+            -name '*.dmg' -o \
+            -name '*.zip' -o \
+            -name '*-setup.exe' -o \
+            -name 'release_notes.md' \
+          \) -exec cp {} artifacts/ \;
+          ls -la artifacts/
+
+      - name: Generate source tarball
+        run: |
+          VERSION="${{ needs.prepare.outputs.version }}"
+          TAG="${{ needs.prepare.outputs.tag }}"
+          git archive --format=tar.gz \
+            --prefix="NereusSDR-${VERSION}/" \
+            "${TAG}" > "artifacts/NereusSDR-${VERSION}-source.tar.gz"
+
+      - name: Generate SHA256SUMS
+        working-directory: artifacts
+        run: |
+          # exclude release_notes.md from sums (not a release artifact)
+          sha256sum $(ls | grep -v '^release_notes.md$') > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Import GPG key
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+          KEY_FP=$(gpg --list-secret-keys --with-colons | awk -F: '/^fpr/ {print $10; exit}')
+          echo "${KEY_FP}:6:" | gpg --import-ownertrust
+          gpg --list-secret-keys
+
+      - name: Sign artifacts
+        env:
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        working-directory: artifacts
+        run: |
+          for f in *.AppImage *.dmg *.zip *.exe *.tar.gz SHA256SUMS.txt; do
+            [ -f "$f" ] || continue
+            gpg --batch --yes --pinentry-mode loopback \
+              --passphrase "$GPG_PASSPHRASE" \
+              --detach-sign --armor "$f"
+          done
+          ls -la
+
+      - name: Create draft GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ needs.prepare.outputs.version }}"
+          TAG="${{ needs.prepare.outputs.tag }}"
+          PRERELEASE_FLAG=""
+          if [[ "${{ needs.prepare.outputs.is_prerelease }}" == "true" ]]; then
+            PRERELEASE_FLAG="--prerelease"
+          fi
+          # Delete existing draft for this tag if rerunning
+          gh release delete "$TAG" --yes --cleanup-tag=false 2>/dev/null || true
+          gh release create "$TAG" \
+            --title "NereusSDR ${VERSION}" \
+            --notes-file artifacts/release_notes.md \
+            --draft \
+            $PRERELEASE_FLAG \
+            artifacts/*.AppImage \
+            artifacts/*.dmg \
+            artifacts/*.zip \
+            artifacts/*-setup.exe \
+            artifacts/*.tar.gz \
+            artifacts/SHA256SUMS.txt \
+            artifacts/*.asc
+
+      - name: Print release URL
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          URL=$(gh release view "${{ needs.prepare.outputs.tag }}" --json url -q .url)
+          echo "Draft release: $URL"
+          echo "## Draft release" >> "$GITHUB_STEP_SUMMARY"
+          echo "$URL" >> "$GITHUB_STEP_SUMMARY"
