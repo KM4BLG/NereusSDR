@@ -105,6 +105,26 @@ jobs:
         if: runner.os == 'Windows'
         uses: mozilla-actions/sccache-action@v0.0.6
 
+      - name: Probe sccache (Windows)
+        if: runner.os == 'Windows'
+        id: sccache_probe
+        shell: bash
+        env:
+          SCCACHE_GHA_ENABLED: "true"
+        run: |
+          # sccache --show-stats forces the server to start. If the GHA cache
+          # backend (Azure Blob) is having an outage, startup fails and every
+          # subsequent compile invocation errors. Catch that here and fall back
+          # to an unlaunched build instead of killing the whole job.
+          if sccache --show-stats >/tmp/sccache-probe.log 2>&1; then
+            echo "sccache reachable — using it as compiler launcher"
+            echo "launcher=sccache" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::sccache backend unreachable — building without compiler cache"
+            cat /tmp/sccache-probe.log || true
+            echo "launcher=" >> "$GITHUB_OUTPUT"
+          fi
+
       # ------------------------------------------------------------------
       # Configure
       # ------------------------------------------------------------------
@@ -131,10 +151,13 @@ jobs:
         env:
           SCCACHE_GHA_ENABLED: "true"
         run: |
+          LAUNCHER_FLAGS=""
+          if [[ "${{ steps.sccache_probe.outputs.launcher }}" == "sccache" ]]; then
+            LAUNCHER_FLAGS="-DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache"
+          fi
           cmake -B build -G "MinGW Makefiles" \
             -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-            -DCMAKE_C_COMPILER_LAUNCHER=sccache \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+            $LAUNCHER_FLAGS
 
       # ------------------------------------------------------------------
       # Build

@@ -333,6 +333,25 @@ jobs:
       - name: Setup sccache
         uses: mozilla-actions/sccache-action@v0.0.6
 
+      - name: Probe sccache
+        id: sccache_probe
+        shell: bash
+        env:
+          SCCACHE_GHA_ENABLED: "true"
+        run: |
+          # sccache --show-stats forces the server to start. If the GHA cache
+          # backend is having an outage, startup fails and every compile
+          # invocation errors. Fall back to no launcher instead of killing
+          # the job.
+          if sccache --show-stats >/tmp/sccache-probe.log 2>&1; then
+            echo "sccache reachable"
+            echo "launcher=sccache" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::sccache backend unreachable — building without compiler cache"
+            cat /tmp/sccache-probe.log || true
+            echo "launcher=" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Setup FFTW3
         shell: pwsh
         run: |
@@ -352,10 +371,13 @@ jobs:
         env:
           SCCACHE_GHA_ENABLED: "true"
         run: |
+          LAUNCHER_FLAGS=""
+          if [[ "${{ steps.sccache_probe.outputs.launcher }}" == "sccache" ]]; then
+            LAUNCHER_FLAGS="-DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache"
+          fi
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_C_COMPILER_LAUNCHER=sccache \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+            $LAUNCHER_FLAGS
 
       - name: Build
         shell: bash
