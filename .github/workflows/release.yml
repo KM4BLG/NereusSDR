@@ -494,6 +494,18 @@ jobs:
             --prefix="NereusSDR-${VERSION}/" \
             "${TAG}" > "artifacts/NereusSDR-${VERSION}-source.tar.gz"
 
+      - name: Fetch FFTW3 corresponding source (GPLv2 §3 / GPLv3 §6)
+        # The Windows installer + portable ZIP bundle a prebuilt
+        # libfftw3f-3.dll. FFTW is GPLv2-or-later, so the binary
+        # distribution must be accompanied by the corresponding source on
+        # the same medium (a GitHub Release IS the medium). Ship the exact
+        # upstream source archive used to build the bundled DLL alongside
+        # the installer artifacts so recipients receive both atomically.
+        run: |
+          curl -fsSL "https://fftw.org/pub/fftw/fftw-3.3.5.tar.gz" \
+            -o "artifacts/fftw-3.3.5.tar.gz"
+          ls -la artifacts/fftw-3.3.5.tar.gz
+
       - name: Generate SHA256SUMS
         working-directory: artifacts
         run: |
