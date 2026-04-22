@@ -257,6 +257,13 @@ jobs:
     # compile an x86_64 binary on macos-15 via CMAKE_OSX_ARCHITECTURES.
     # Tracked for Phase 3N+1.
     runs-on: ${{ matrix.runner }}
+    # Capture the Apple Developer ID secret into a job-level env var so
+    # step-level `if:` guards can evaluate it. GitHub Actions forbids
+    # `secrets.*` directly in step-level `if:` expressions — they're
+    # evaluated at workflow-parse time before secrets inject. Job-level
+    # env is populated after secrets are available.
+    env:
+      HAS_APPLE_DEVELOPER_ID: ${{ secrets.APPLE_DEVELOPER_ID != '' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -334,7 +341,7 @@ jobs:
           cmake --build build-hal
 
       - name: Sign HAL plugin
-        if: ${{ secrets.APPLE_DEVELOPER_ID != '' }}
+        if: env.HAS_APPLE_DEVELOPER_ID == 'true'
         run: |
           codesign --force --options runtime --timestamp \
             --sign "Developer ID Application: ${{ secrets.APPLE_DEVELOPER_ID }}" \
@@ -344,7 +351,7 @@ jobs:
         run: bash packaging/macos/hal-installer.sh
 
       - name: Notarize
-        if: ${{ secrets.APPLE_DEVELOPER_ID != '' }}
+        if: env.HAS_APPLE_DEVELOPER_ID == 'true'
         run: |
           xcrun notarytool submit \
             build/NereusSDR-${{ needs.prepare.outputs.version }}-macOS.pkg \
@@ -354,7 +361,7 @@ jobs:
             --wait
 
       - name: Staple
-        if: ${{ secrets.APPLE_DEVELOPER_ID != '' }}
+        if: env.HAS_APPLE_DEVELOPER_ID == 'true'
         run: |
           xcrun stapler staple \
             build/NereusSDR-${{ needs.prepare.outputs.version }}-macOS.pkg
