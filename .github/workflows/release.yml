@@ -130,7 +130,7 @@ jobs:
         if: matrix.use_aqt == false
         run: |
           sudo apt-get install -y qt6-base-dev qt6-multimedia-dev \
-            qt6-base-private-dev
+            qt6-base-private-dev qt6-shadertools-dev
 
       - name: Install Qt 6.7 via aqtinstall (x86_64)
         if: matrix.use_aqt == true
