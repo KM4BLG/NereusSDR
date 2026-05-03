@@ -1,9 +1,11 @@
-name: Release macOS Shakedown (throwaway)
+name: Release macOS Shakedown (throwaway, Option 2)
 
-# This workflow exists ONLY to scout `macos-13` runner availability and
-# x86_64 build path on macOS before adding the Intel matrix row to
-# release.yml. It triggers manually only — no tag push, no pull_request,
-# no schedule. Deleted in the Phase 2 commit of the same PR.
+# Pivoted from Option 1 (native macos-13) to Option 2 (cross-compile
+# x86_64 from macos-15 via aqtinstall). The macos-13 runner pool is
+# scarce as Apple deprecates Intel CI; cross-compile from the abundant
+# Apple Silicon runner is the runner-independent path. Workflow_dispatch
+# only (plus a paths-filtered push trigger so GHA actually runs it from
+# a non-default branch). Deleted in Stage B of the same PR.
 
 on:
   workflow_dispatch:
@@ -19,43 +21,66 @@ permissions:
   contents: read
 
 jobs:
-  shakedown-macos-intel:
+  shakedown-macos-intel-crosscompile:
     strategy:
       fail-fast: false
       matrix:
         include:
-          - runner: macos-13
+          - runner: macos-15
             arch: x86_64
             deployment_target: "11.0"
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Verify runner identity
+      - name: Verify runner identity + Rosetta presence
         run: |
           echo "Runner: ${{ matrix.runner }}"
-          echo "Arch (uname -m): $(uname -m)"
+          echo "Host arch: $(uname -m)"
           echo "macOS version: $(sw_vers -productVersion)"
           echo "Xcode: $(xcodebuild -version 2>&1 | head -1)"
-
-      - name: Install dependencies
-        run: brew install qt@6 ninja create-dmg fftw ccache
-
-      - name: Verify Qt version is 6.8+
-        run: |
-          QT_VER=$(brew list --versions qt@6 | awk '{print $2}')
-          echo "Brew qt@6 version: $QT_VER"
-          MAJOR=$(echo "$QT_VER" | cut -d. -f1)
-          MINOR=$(echo "$QT_VER" | cut -d. -f2)
-          if [ "$MAJOR" -lt 6 ] || { [ "$MAJOR" -eq 6 ] && [ "$MINOR" -lt 8 ]; }; then
-            echo "::error::Qt $QT_VER is below 6.8 minimum required"
-            exit 1
+          if /usr/bin/arch -x86_64 /usr/bin/true 2>/dev/null; then
+            echo "✓ Rosetta is available — x86_64 binaries can run for ctest"
+            echo "ROSETTA_AVAILABLE=true" >> $GITHUB_ENV
+          else
+            echo "::warning::Rosetta NOT present on runner — ctest will be skipped"
+            echo "ROSETTA_AVAILABLE=false" >> $GITHUB_ENV
           fi
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install non-Qt brew packages
+        run: brew install ninja create-dmg ccache
 
-      - name: Set up DeepFilterNet3 library
+      - name: Install Qt 6.8 for macOS via aqtinstall
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.*'
+          host: 'mac'
+          target: 'desktop'
+          arch: 'clang_64'
+          modules: 'qtmultimedia qtshadertools'
+          cache: true
+
+      - name: Build FFTW from source for x86_64
+        run: |
+          curl -fsSL https://fftw.org/pub/fftw/fftw-3.3.10.tar.gz -o fftw.tar.gz
+          tar xzf fftw.tar.gz
+          cd fftw-3.3.10
+          ./configure --enable-single --enable-shared --disable-doc \
+            --prefix="${{ github.workspace }}/fftw-x86_64" \
+            CFLAGS="-arch x86_64 -mmacosx-version-min=11.0" \
+            --host=x86_64-apple-darwin
+          make -j$(sysctl -n hw.ncpu)
+          make install
+          ls -la "${{ github.workspace }}/fftw-x86_64/lib/"
+
+      - name: Install Rust toolchain with x86_64 target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin
+
+      - name: Set up DeepFilterNet3 library (cross-compile to x86_64)
+        env:
+          NEREUS_TARGET_ARCH: x86_64
         run: bash setup-deepfilter.sh
 
       - name: Configure
@@ -64,14 +89,19 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_OSX_DEPLOYMENT_TARGET="${{ matrix.deployment_target }}" \
             -DCMAKE_OSX_ARCHITECTURES="${{ matrix.arch }}" \
-            -DCMAKE_PREFIX_PATH="$(brew --prefix)"
+            -DCMAKE_PREFIX_PATH="${{ github.workspace }}/fftw-x86_64"
 
       - name: Build
         run: cmake --build build -j$(sysctl -n hw.ncpu)
 
-      - name: Test
+      - name: Test (via Rosetta if available)
         working-directory: build
-        run: ctest --output-on-failure --no-tests=ignore
+        run: |
+          if [ "$ROSETTA_AVAILABLE" = "true" ]; then
+            ctest --output-on-failure --no-tests=ignore
+          else
+            echo "::warning::Skipping ctest — Rosetta not present on runner"
+          fi
 
       - name: Verify built binary is x86_64
         run: |
@@ -91,6 +121,6 @@ jobs:
       - name: Upload .app artifact for inspection
         uses: actions/upload-artifact@v4
         with:
-          name: shakedown-macos-intel-app
+          name: shakedown-macos-intel-crosscompile-app
           path: build/NereusSDR.app
           retention-days: 3
