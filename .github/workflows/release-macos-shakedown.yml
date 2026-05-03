@@ -60,18 +60,42 @@ jobs:
           modules: 'qtmultimedia qtshadertools'
           cache: true
 
-      - name: Build FFTW from source for x86_64
+      - name: Build FFTW from source for x86_64 (both precisions)
         run: |
+          # NereusSDR needs both libfftw3 (double, for libspecbleach + WDSP)
+          # and libfftw3f (single, for FFTEngine). FFTW's autotools forces
+          # one precision per configure run, so we run install twice into
+          # the same prefix.
+          PREFIX="${{ github.workspace }}/fftw-x86_64"
+          CFLAGS="-arch x86_64 -mmacosx-version-min=11.0"
           curl -fsSL https://fftw.org/pub/fftw/fftw-3.3.10.tar.gz -o fftw.tar.gz
           tar xzf fftw.tar.gz
           cd fftw-3.3.10
-          ./configure --enable-single --enable-shared --disable-doc \
-            --prefix="${{ github.workspace }}/fftw-x86_64" \
-            CFLAGS="-arch x86_64 -mmacosx-version-min=11.0" \
+
+          # Pass 1 — double precision (libfftw3)
+          ./configure --enable-shared --disable-doc \
+            --prefix="$PREFIX" \
+            CFLAGS="$CFLAGS" \
             --host=x86_64-apple-darwin
           make -j$(sysctl -n hw.ncpu)
           make install
-          ls -la "${{ github.workspace }}/fftw-x86_64/lib/"
+          make distclean
+
+          # Pass 2 — single precision (libfftw3f)
+          ./configure --enable-single --enable-shared --disable-doc \
+            --prefix="$PREFIX" \
+            CFLAGS="$CFLAGS" \
+            --host=x86_64-apple-darwin
+          make -j$(sysctl -n hw.ncpu)
+          make install
+
+          # Verify both precisions installed
+          ls -la "$PREFIX/lib/" "$PREFIX/include/" "$PREFIX/lib/pkgconfig/"
+          test -f "$PREFIX/include/fftw3.h"            || { echo "::error::fftw3.h not installed";  exit 1; }
+          test -f "$PREFIX/lib/pkgconfig/fftw3.pc"     || { echo "::error::fftw3.pc not installed"; exit 1; }
+          test -f "$PREFIX/lib/pkgconfig/fftw3f.pc"    || { echo "::error::fftw3f.pc not installed"; exit 1; }
+          test -f "$PREFIX/lib/libfftw3.dylib"         || { echo "::error::libfftw3 (double) not installed"; exit 1; }
+          test -f "$PREFIX/lib/libfftw3f.dylib"        || { echo "::error::libfftw3f (single) not installed"; exit 1; }
 
       - name: Install Rust toolchain with x86_64 target
         uses: dtolnay/rust-toolchain@stable
@@ -85,6 +109,11 @@ jobs:
 
       - name: Configure
         run: |
+          # Prepend our cross-compiled FFTW pkgconfig dir to PKG_CONFIG_PATH
+          # so NereusSDR's `pkg_check_modules(FFTW3 fftw3)` finds the x86_64
+          # build instead of falling through to system paths (which contain
+          # no FFTW since we did not brew-install it).
+          export PKG_CONFIG_PATH="${{ github.workspace }}/fftw-x86_64/lib/pkgconfig:$PKG_CONFIG_PATH"
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_OSX_DEPLOYMENT_TARGET="${{ matrix.deployment_target }}" \
